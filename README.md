@@ -27,17 +27,52 @@ packages/hana-adapter/
 
 装完确认插件状态是 `loaded`，并且 `browser_bridge_status` 能报出监听端口（默认从 `43190` 起）。
 
-### 2. 装浏览器扩展
+### 2. 构建并装浏览器扩展
 
-在 Edge 或 Chrome 打开扩展管理页（`edge://extensions` 或 `chrome://extensions`），开启开发人员模式，点「加载已解压缩的扩展」，选择：
+先明确一件事：**`extension-build/` 不在仓库里**，它已写进 `.gitignore`。那是从源码构建出来的稳定副本，首次使用需要自己生成。
+
+#### 2.1 构建
+
+需要 Node.js 22 以上。仓库是 pnpm workspace，先装扩展需要的依赖：
+
+```powershell
+# 首次安装依赖，只需要一次，约两分钟
+corepack pnpm install --filter "dsh-browser-extension..." --no-frozen-lockfile --pm-on-fail=ignore
+```
+
+`--pm-on-fail=ignore` 是为了绕开一个版本冲突：`package.json` 里锁了 `packageManager: pnpm@11.7.0`，而 corepack 可能已经装了别的大版本，两者对不上会直接报 `ERR_PNPM_BAD_PM_VERSION`。如果你的 corepack 恰好就是 11.7.0，可以去掉这个参数。
+
+然后构建并同步：
+
+```powershell
+$env:PATH = "$PWD\extensions\dsh-browser\node_modules\.bin;$env:PATH"
+node extensions\dsh-browser\scripts\build.mjs
+.\scripts\install-extension.ps1
+```
+
+三步分别做的是：编译扩展源码到 `extensions/dsh-browser/dist/`，把 dist 复制到 `extension-build/`，然后打开扩展管理页。
+
+产物结构：
+
+```
+extension-build/
+  manifest.json      浏览器靠这个认出扩展
+  background.js      桥连接、工具分发、审批
+  content.js         页面快照与操作，注入到网页
+  hana-panel.html    侧边栏界面
+  hana-panel.js      侧边栏逻辑
+  panel/ assets/ _locales/
+```
+
+#### 2.2 加载到浏览器
+
+在 Edge 或 Chrome 打开 `edge://extensions`（或 `chrome://extensions`），开启开发人员模式，点「加载已解压缩的扩展」，选择：
 
 ```
 extension-build/
 ```
 
-也可以运行 `scripts/install-extension.ps1`，它会把 `extensions/dsh-browser/dist` 复制到 `extension-build/` 并自动打开扩展页。
-
-扩展装好后不需要配置地址，它会自己探测本机的 Hana 桥。
+扩展装好后不需要配置地址，它会自己探测本机的 Hana 桥（从端口 `43190` 开始找）。
 
 ### 3. 改完代码之后
 
