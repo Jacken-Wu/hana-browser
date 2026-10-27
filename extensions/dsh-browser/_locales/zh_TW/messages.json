@@ -1,11 +1,11 @@
 {
   "extensionName": {
-    "message": "dsh 瀏覽器助手"
+    "message": "Hana 瀏覽器助手"
   },
   "extensionDescription": {
-    "message": "讓 dsh 無需視覺能力即可直接讀取並操作瀏覽器的 Chrome 側邊欄擴充功能。"
+    "message": "讓 Hana 直接讀取並操作你正在使用的瀏覽器分頁：純文字快照、保留登入狀態、不截圖。"
   },
   "actionTitle": {
-    "message": "開啟 dsh 瀏覽器助手"
+    "message": "開啟 Hana 瀏覽器助手"
   }
 }

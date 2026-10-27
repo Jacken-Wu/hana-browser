@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "hana-browser",
+  "name": "Hana Browser",
+  "version": "0.1.0",
+  "description": "把 Chrome 扩展接进 Hana：模型直接读取和操作用户正在用的浏览器标签页，保留登录态。纯文本快照 + 编号交互清单，永不截图。协议移植自 dsh-browser。",
+  "trust": "full-access",
+  "contributes": {
+    "tools": "tools/*.js"
+  }
+}

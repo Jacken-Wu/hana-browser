@@ -1,11 +1,11 @@
 {
   "extensionName": {
-    "message": "dsh Browser Assistant"
+    "message": "Hana Browser Assistant"
   },
   "extensionDescription": {
-    "message": "A Chrome side-panel extension that lets dsh read and operate your browser directly without vision."
+    "message": "Let Hana read and operate the browser tabs you are already using: text-only snapshots, logins preserved, no screenshots."
   },
   "actionTitle": {
-    "message": "Open dsh Browser Assistant"
+    "message": "Open Hana Browser Assistant"
   }
 }

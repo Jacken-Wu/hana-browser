@@ -101,7 +101,10 @@ const SETTINGS_DEFAULTS: Settings = {
   bridgeUrl: '',
   token: '',
   sharePageContent: 'auto',
-  unrestrictedBrowserAccess: false,
+  // Hana 适配：默认无需逐次审批。
+  // 上游靠侧边栏弹窗确认每一次写操作，而 Hana 没有这个面板；
+  // 审批责任交给 Hana 自己的工具调用审批层，避免写操作因无人确认而超时。
+  unrestrictedBrowserAccess: true,
   trustedActionOrigins: [],
   approvalNotifications: true,
   autoResumeSession: true,
@@ -114,7 +117,18 @@ const SETTINGS_DEFAULTS: Settings = {
  *   用户指南推荐固定为 43189（见 deepseek-harness-desktop docs/user-guide）；
  * - 14389 为历史桌面应用端口，保留兼容旧版。
  */
-const DISCOVERY_PORTS = [3080, 3081, 3090, 14389, 43189]
+const HANA_BRIDGE_PORTS = [43190, 43191, 43192, 43193, 43194]
+const DISCOVERY_PORTS = [...HANA_BRIDGE_PORTS, 3080, 3081, 3090, 14389, 43189]
+/**
+ * Hana 适配：常驻模式。
+ *
+ * 上游把桥连接设计成“面板租约”：侧边栏打开才允许占用单槽位，关闭就断开。
+ * Hana 自带对话界面，扩展只需要当浏览器执行器，所以这里改成扩展启用即连接、
+ * 靠 chrome.alarms 定期唤醒 service worker 重连，不再依赖侧边栏。
+ *
+ * 置为 false 可回到上游的面板租约行为。
+ */
+const PERSISTENT_BRIDGE = true
 const LEGACY_LOCAL_URL = 'ws://127.0.0.1:3080'
 
 /** 探测本机 dsh 的桥地址：fetch /ext/bridge-config 直到成功。 */
@@ -1227,14 +1241,15 @@ function cancelAllToolCalls(): void {
 /** (Re)start the bridge with the current settings. 零配置：地址留空时自动探测；回环连接无需 token。 */
 async function startBridge(): Promise<void> {
   const revision = ++bridgeStartRevision
-  if (panelPorts.size === 0) return
+  if (!PERSISTENT_BRIDGE && panelPorts.size === 0) return
   let url = settings.bridgeUrl
   if (url === '') {
-    url = await discoverBridge(() => revision === bridgeStartRevision && panelPorts.size > 0) ?? ''
+    url = await discoverBridge(() => revision === bridgeStartRevision
+      && (PERSISTENT_BRIDGE || panelPorts.size > 0)) ?? ''
   }
   // Discovery is asynchronous. A panel may have closed or a newer settings
   // update may have started while its fetches were in flight.
-  if (revision !== bridgeStartRevision || panelPorts.size === 0) return
+  if (revision !== bridgeStartRevision || (!PERSISTENT_BRIDGE && panelPorts.size === 0)) return
   if (url === '') {
     bridge?.stop()
     bridge = null
@@ -1261,7 +1276,7 @@ async function startBridge(): Promise<void> {
         }
         broadcastStatus()
         if (state === 'stopped') refreshPanelResumeHints()
-        if (state === 'stopped' && panelPorts.size === 0) disarmBridgeKeepalive()
+        if (state === 'stopped' && !PERSISTENT_BRIDGE && panelPorts.size === 0) disarmBridgeKeepalive()
       },
       onFrame: (frame) => {
         if (frame.t === 'event') {
@@ -1278,7 +1293,7 @@ async function startBridge(): Promise<void> {
         broadcastStatus()
         void pushBudgetToControlledTab(negotiated)
       },
-    }, probeBridge, () => panelPorts.size > 0)
+    }, probeBridge, () => PERSISTENT_BRIDGE || panelPorts.size > 0)
     bridge = client
     rpc = createRpc(client)
   }
@@ -1599,11 +1614,14 @@ chrome.runtime.onConnect.addListener((port) => {
     }
     syncSelectionWatch()
     if (panelPorts.size === 0) {
-      bridgeStartRevision += 1
-      bridge?.suspendReconnect()
+      // 面板关闭不再收回桥：常驻模式下连接与侧边栏无关。
       sessionTrustedActionOrigins.clear()
       approvals.notifyPending()
-      if (bridge?.state !== 'connected') disarmBridgeKeepalive()
+      if (!PERSISTENT_BRIDGE) {
+        bridgeStartRevision += 1
+        bridge?.suspendReconnect()
+        if (bridge?.state !== 'connected') disarmBridgeKeepalive()
+      }
     }
   })
 })
@@ -1710,7 +1728,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== BRIDGE_KEEPALIVE_ALARM) return
-  if (panelPorts.size === 0) {
+  if (!PERSISTENT_BRIDGE && panelPorts.size === 0) {
     if (bridge === null || bridge.state !== 'connected') disarmBridgeKeepalive()
     return
   }
@@ -1747,9 +1765,19 @@ if (import.meta.env.EXT_TARGET === 'firefox') {
   void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
 }
 
-// Alarms survive some extension/service-worker restarts. Remove any stale
-// schedule left by an older eager-connection build; onConnect re-arms it.
-disarmBridgeKeepalive()
+if (PERSISTENT_BRIDGE) {
+  // 常驻模式：service worker 一醒来就拿住桥，并让 alarm 定期把它叫醒。
+  // 只在 bridge 为 null（SW 刚重启）时启动，避免从另一个浏览器手里抢槽位。
+  armBridgeKeepalive()
+  void settingsReady.then(() => {
+    if (bridge === null) void startBridge()
+  })
+} else {
+  // Alarms survive some extension/service-worker restarts. Remove any stale
+  // schedule left by an older eager-connection build; onConnect re-arms it.
+  disarmBridgeKeepalive()
+}
 
+// 上游行为（留给 PERSISTENT_BRIDGE=false 的回退说明）：
 // `settingsReady` intentionally has no bridge-start continuation: opening a
 // side panel is the first action allowed to claim the bridge connection.

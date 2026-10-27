@@ -2,6 +2,86 @@
 
 **English** | [中文](README.zh.md)
 
+> [!IMPORTANT]
+> **本仓库已适配 HanaAgent。** 宿主从 dsh 换成了 Hana，上游 dsh 的说明保留在下方作参考。
+>
+> 重装或给别人装时，只需要认准这两个文件夹：
+>
+> | 装什么 | 用哪个文件夹 | 装到哪里 |
+> |---|---|---|
+> | **Hana 插件**（连接桥 + 16 个 browser 工具 + 侧边栏会话） | `packages/hana-adapter/` | Hana → 设置 → 插件 → 从本地安装，指向该目录 |
+> | **浏览器扩展**（Edge / Chrome 加载的那个） | `extension-build/` | 浏览器扩展页 → 开发者模式 → 加载已解压缩的扩展 |
+>
+> `packages/hana-adapter/` 里必须有 `manifest.json`，那是 Hana 插件清单。
+> `extension-build/` 是构建产物的稳定副本；源码在 `extensions/dsh-browser/`，构建产物在 `extensions/dsh-browser/dist/`。
+
+## 安装（HanaAgent 适配版）
+
+### 1. 装 Hana 插件
+
+在 Hana 的设置 → 插件里选择从本地目录安装，指向：
+
+```
+packages/hana-adapter/
+```
+
+装完确认插件状态是 `loaded`，并且 `browser_bridge_status` 能报出监听端口（默认从 `43190` 起）。
+
+### 2. 装浏览器扩展
+
+在 Edge 或 Chrome 打开扩展管理页（`edge://extensions` 或 `chrome://extensions`），开启开发人员模式，点「加载已解压缩的扩展」，选择：
+
+```
+extension-build/
+```
+
+也可以运行 `scripts/install-extension.ps1`，它会把 `extensions/dsh-browser/dist` 复制到 `extension-build/` 并自动打开扩展页。
+
+扩展装好后不需要配置地址，它会自己探测本机的 Hana 桥。
+
+### 3. 改完代码之后
+
+| 改了什么 | 要做什么 |
+|---|---|
+| `packages/hana-adapter/` | 重新安装 Hana 插件，然后重启 Hana |
+| `extensions/dsh-browser/` | 构建 → 同步 → 扩展页点「重新加载」 |
+
+构建和同步：
+
+```powershell
+$env:PATH = "$PWD\extensions\dsh-browser\node_modules\.bin;$env:PATH"
+node extensions\dsh-browser\scripts\build.mjs
+.\scripts\install-extension.ps1
+```
+
+> 注意：Hana 的插件运行时按文件路径缓存 ES 模块，改了 `lib/` 下的文件后，单纯的插件重载不会生效，需要重启 Hana 或换文件名。正式安装 + 重启一次之后不会再遇到。
+
+### 目录速查
+
+```
+packages/hana-adapter/        Hana 插件（装进 Hana 的就是这个）
+  manifest.json               插件清单
+  index.js                    生命周期入口，捕获宿主上下文
+  lib/bridge-core.js          WebSocket 桥（纯 Node 内置实现）
+  lib/chat-session.js         侧边栏会话与独立 agent
+  lib/host.js                 宿主上下文容器
+  lib/protocol.js             线协议定义
+  tools/*.js                  16 个模型可调用工具
+  test/                       协议层与端到端自测脚本
+extensions/dsh-browser/       浏览器扩展源码（TypeScript + React）
+  src/background/             桥连接、工具分发、审批
+  src/content/                页面快照与操作（注入到网页）
+  dist/                       构建产物
+extension-build/              给浏览器加载的稳定副本
+scripts/install-extension.ps1 构建产物同步到 extension-build 并打开扩展页
+```
+
+---
+
+以下为上游 dsh 版本的原始说明，保留作参考。Hana 环境不需要执行其中的 `dsh plugin` 命令。
+
+---
+
 <img width="1701" height="897" alt="dsh Browser Control" src="https://github.com/user-attachments/assets/3b1f3a25-f962-4e02-a9ef-d23e0d01fc8e" />
 
 Connect [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) to the Chrome or Firefox tabs you are already using. The model can read page content, operate controls, navigate, and manage tabs while preserving your login state, session, and cookies. A side panel or sidebar provides the conversation UI.

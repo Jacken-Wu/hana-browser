@@ -6,6 +6,8 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
+import { copyFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -40,5 +42,12 @@ if (watch) {
       shell: process.platform === 'win32',
     })
     if (result.status !== 0) process.exit(result.status ?? 1)
+  }
+
+  // Hana adapter: the side panel is a static status page, not the upstream
+  // React chat client. Copy it after the vite passes so the first target's
+  // clean step cannot remove it.
+  for (const file of ['hana-panel.html', 'hana-panel.js']) {
+    copyFileSync(join(root, file), join(root, 'dist', file))
   }
 }

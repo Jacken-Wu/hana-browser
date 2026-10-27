@@ -5,3 +5,10 @@ node_modules/
 !benchmark/lib/**
 **/dist/
 **/dist-firefox/
+
+# Hana adapter: the plugin's own lib/ is source, not build output.
+!packages/hana-adapter/lib/
+!packages/hana-adapter/lib/**
+
+# Stable copy of the built extension loaded by the browser.
+extension-build/
