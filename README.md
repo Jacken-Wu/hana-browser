@@ -91,6 +91,60 @@ node extensions\dsh-browser\scripts\build.mjs
 
 > 注意：Hana 的插件运行时按文件路径缓存 ES 模块，改了 `lib/` 下的文件后，单纯的插件重载不会生效，需要重启 Hana 或换文件名。正式安装 + 重启一次之后不会再遇到。
 
+### 4. 视频总结的额外依赖（可选）
+
+不装也能用其它浏览器工具，只是 B 站视频页的「AI 总结」会报缺少依赖。
+
+涉及三个位置：
+
+| 位置 | 说明 |
+|---|---|
+| `packages/hana-adapter/asr/sensevoice_oneshot.py` | 识别脚本，随插件提供 |
+| `<插件数据目录>/models/sensevoice/` | 模型，需自己下载 |
+| PATH 里的 `ffmpeg` | 音频转码，需自己安装 |
+
+插件数据目录默认在 `%USERPROFILE%\.hanako\plugin-data\hana-browser`。
+
+#### 4.1 Python 包
+
+```powershell
+pip install sherpa-onnx -i https://mirrors.aliyun.com/pypi/simple/
+```
+
+清华源对这个包会报 `No matching distribution found`，换上面这个源就行。
+
+#### 4.2 模型
+
+下两个文件（约 226 MB + 309 KB）：
+
+```text
+https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/model.int8.onnx
+https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09/resolve/main/tokens.txt
+```
+
+放成：
+
+```text
+%USERPROFILE%\.hanako\plugin-data\hana-browser\models\sensevoice\
+  model.int8.onnx
+  tokens.txt
+```
+
+#### 4.3 ffmpeg
+
+装好加进 PATH。探测顺序：PATH → `C:\ffmpeg\bin` → chocolatey → scoop。
+
+#### 4.4 验证
+
+```powershell
+python -c "import sherpa_onnx; print('ok')"
+```
+
+再在 Hana 里调一次 `browser_video_transcript`，参数 `{"probe": true}`，
+它会逐项报引擎、ffmpeg、模型目录的状态。
+
+换模型、切 HTTP 模式见 `packages/hana-adapter/README.md`。
+
 ### 目录速查
 
 ```
@@ -101,8 +155,12 @@ packages/hana-adapter/        Hana 插件（装进 Hana 的就是这个）
   lib/chat-session.js         侧边栏会话与独立 agent
   lib/host.js                 宿主上下文容器
   lib/protocol.js             线协议定义
-  tools/*.js                  16 个模型可调用工具
-  test/                       协议层与端到端自测脚本
+  lib/bilibili.js             B 站取流：链接解析、DASH 音频、下载
+  lib/audio.js                ffmpeg 转码到 16k 单声道 WAV
+  lib/asr.js                  识别引擎层：配置、命令行执行、HTTP 兼容模式
+  asr/sensevoice_oneshot.py   一次性识别脚本（sherpa-onnx）
+  tools/*.js                  17 个模型可调用工具
+  test/                       协议层、转写链路与端到端自测脚本
 extensions/dsh-browser/       浏览器扩展源码（TypeScript + React）
   src/background/             桥连接、工具分发、审批
   src/content/                页面快照与操作（注入到网页）
@@ -175,6 +233,7 @@ The paired Playwright / extension duration ratio was **1.24** (95% CI **1.16–1
 | Close tab | `browser_close_tab` | Close a tab returned by `browser_list_tabs` |
 | Read region | `browser_get_text` | Lazy-loaded or partial page text |
 | Wait for stability | `browser_wait` | Page-load and render-settle detection |
+| Summarize a video | `browser_video_transcript` | Transcribe a Bilibili video locally: DASH audio → ffmpeg → local ASR. No daemon, no idle cost; transcripts are cached on disk. Needs `sherpa-onnx` and a model, see [step 4](#4-视频总结的额外依赖可选) |
 | Send images | `session.prompt` / `session.attachment` | Host-capability-gated image drafts, image-only prompts, and durable history previews |
 | Quote a selection | side panel composer | Text you highlight in the page appears in the composer and is sent with your next message as fenced, attributed page content |
 
