@@ -1310,8 +1310,8 @@ async function gatewayRpc(method: string, payload: unknown): Promise<unknown> {
   return rpc.request(method, payload)
 }
 
-// ---- Content script messages ----
 
+// ---- Content script messages ----
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (typeof message !== 'object' || message === null) return
   if (sender.id !== chrome.runtime.id) return
@@ -1329,6 +1329,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return
   }
   if (type !== 'DSH_SELECTION' || sender.tab === undefined) return
+
+
   recordSelection(sender.tab, sender.frameId ?? 0, (message as { selection?: unknown }).selection)
 })
 

@@ -5,7 +5,7 @@
  * 运行：node packages/hana-adapter/test/bridge-smoke.mjs
  */
 
-import { ensureStarted, callTool, status } from '../lib/bridge.js'
+import { ensureStarted, callTool, status } from '../lib/bridge-core.js'
 
 const problems = []
 

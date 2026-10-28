@@ -73,6 +73,9 @@
         cursor: pointer;
       }
       .ghost:hover { color: var(--fg); border-color: var(--accent); }
+      .ghost.accent { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+      .ghost.accent:hover { background: var(--accent-soft); }
+      .ghost:disabled { opacity: 0.5; cursor: default; }
 
       .pagebar {
         padding: 7px 14px;
@@ -290,6 +293,7 @@
         <span class="status" id="status">连接中…</span>
       </div>
       <div class="actions">
+        <button class="ghost accent" id="summarize" hidden title="把这个 B 站视频在本地转写并总结">AI 总结</button>
         <button class="ghost" id="newchat" title="开始一段新对话">新对话</button>
       </div>
     </header>

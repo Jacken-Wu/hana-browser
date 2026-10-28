@@ -173,8 +173,9 @@ let sink = null
 
 const POLL_INTERVAL_MS = 700
 /** assistant 条数在这段时间内不再变化，才认为本轮结束。 */
-const SETTLE_MS = 1800
-const REPLY_DEADLINE_MS = 240_000
+const SETTLE_MS = 2200
+/** 一轮里可能要跑几分钟的转写，超时要给够。 */
+const REPLY_DEADLINE_MS = 900_000
 
 /**
  * 注册消息推送出口。bridge 在启动时把自己的广播函数交进来。
@@ -241,13 +242,63 @@ export async function ensureSession(tabId, tabTitle) {
   return created
 }
 
-async function readHistory(sessionPath, limit = 80) {
+/**
+ * 一次读多少条历史。
+ *
+ * 注意宿主的行为：`session:history` 是从头往后取前 limit 条，不是取最后 limit 条。
+ * 所以这个数不能太小，一旦达到上限，新消息就再也看不到——
+ * 下面的 sendChat 会直接报错提醒用户开新对话，而不是默默挂着不动。
+ */
+const HISTORY_LIMIT = 200
+
+async function readHistory(sessionPath, limit = HISTORY_LIMIT) {
   const result = await requestCapability('session:history', { sessionPath, limit })
   return Array.isArray(result?.messages) ? result.messages : []
 }
 
 function assistantList(messages) {
   return messages.filter((m) => m && m.role === 'assistant')
+}
+
+/**
+ * 读一条助理消息。
+ *
+ * 注意：`session:history` 返回的不是会话文件里的块数组，而是已经被宿主拍平过的形状：
+ *   { role: 'assistant', content: '正文字符串', thinking?: string, toolCalls?: [...] }
+ * 所以正文不在 content[].text 里，思考也不在 content[] 里。
+ * 之前按文件结构写，导致 thinking 永远为空、工具调用永远看不见。
+ *
+ * @param {{ content?: unknown, thinking?: unknown }} message
+ */
+function readAssistant(message) {
+  const parsed = stripMood(message?.content)
+  return {
+    text: parsed.text,
+    mood: parsed.mood,
+    thinking: typeof message?.thinking === 'string' ? message.thinking.trim() : '',
+  }
+}
+
+/**
+ * 这一轮是否真的结束了。
+ *
+ * 只看「助理消息条数稳定」不够：工具调用要跑几分钟，期间条数恰好稳定，
+ * 之前就是在这里提前收工，导致第二段回复要切标签页刷新才出现。
+ *
+ * 能下结论的只有历史的最后一条：宿主不会把 toolResult 放进 history，
+ * 所以「还在调工具」只能从 assistant 消息自带的 toolCalls 字段看出来。
+ *
+ * @param {Array<{role?: string, content?: unknown, thinking?: unknown, toolCalls?: unknown[]}>} messages
+ * @returns {boolean}
+ */
+export function isTurnComplete(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return false
+  const tail = messages[messages.length - 1]
+  if (!tail || tail.role !== 'assistant') return false
+  if (Array.isArray(tail.toolCalls) && tail.toolCalls.length > 0) return false
+  const body = readAssistant(tail)
+  // 只有 thinking 不算说完：那是工具调用前的中间态。
+  return Boolean(body.text || body.mood)
 }
 
 /**
@@ -265,8 +316,16 @@ export async function sendChat(tabId, text, meta = {}) {
   const session = await ensureSession(key, meta.title)
   let baseline = 0
   try {
-    baseline = assistantList(await readHistory(session.sessionPath)).length
-  } catch {
+    const history = await readHistory(session.sessionPath)
+    if (history.length >= HISTORY_LIMIT) {
+      throw Object.assign(
+        new Error('这个标签页的会话太长了，继续下去看不到新回复。先点「新对话」再试。'),
+        { code: 'session-too-long' },
+      )
+    }
+    baseline = assistantList(history).length
+  } catch (error) {
+    if (error?.code === 'session-too-long') throw error
     baseline = 0
   }
 
@@ -289,6 +348,13 @@ async function watchReply(key, sessionPath, baseline) {
   const deadline = Date.now() + REPLY_DEADLINE_MS
   let lastCount = baseline
   let settledAt = 0
+  /**
+   * 已经推给面板的助理消息下标。
+   *
+   * 中间那些「后面又出现了更新的消息」的回复肯定已经说完了，见到新的就立刻推，
+   * 不用等整轮结束。之前不分段推，用户会看到第一段之后界面就不动了。
+   */
+  let emitted = baseline
 
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
@@ -309,29 +375,47 @@ async function watchReply(key, sessionPath, baseline) {
     }
     if (list.length <= baseline) continue
 
-    // 只看本轮新增的助理消息，拆成正文/思维/内心
-    const fresh = list.slice(baseline).map((message) => stripMood(message.content))
-    // 工具调用轮次只有 thinking 没有正文，那种不算回答完成
-    const withBody = fresh.filter((item) => item.text || item.mood)
-    if (withBody.length === 0) {
+    // 除了最后一条，其余都已经定性，先推出去
+    while (emitted < list.length - 1) {
+      const item = readAssistant(list[emitted])
+      if (item.text || item.mood) {
+        emit({
+          kind: 'reply',
+          tabId: key,
+          text: item.text,
+          mood: item.mood,
+          thinking: item.thinking,
+          sessionPath,
+        })
+      }
+      emitted += 1
+    }
+
+    // 判断这一轮是不是真的结束了。只看「助理消息条数稳定」是不够的：
+    // 转写要跑几分钟，期间条数恰好是稳定的，之前就是在这里提前收工，
+    // 导致第二段回复要切标签页刷新才出现。
+    if (!isTurnComplete(messages)) {
       settledAt = 0
       continue
     }
 
+    const tail = messages[messages.length - 1]
+    const tailBody = readAssistant(tail)
+
     if (settledAt === 0) settledAt = Date.now()
     if (Date.now() - settledAt < SETTLE_MS) continue
 
+    emit({
+      kind: 'reply',
+      tabId: key,
+      text: tailBody.text,
+      mood: tailBody.mood,
+      thinking: tailBody.thinking,
+      sessionPath,
+    })
+    emitted = list.length
+
     pending.delete(key)
-    for (const item of withBody) {
-      emit({
-        kind: 'reply',
-        tabId: key,
-        text: item.text,
-        mood: item.mood,
-        thinking: item.thinking,
-        sessionPath,
-      })
-    }
     emit({ kind: 'done', tabId: key })
     return
   }
@@ -355,7 +439,7 @@ export async function readChat(tabId) {
       continue
     }
     if (message.role !== 'assistant') continue
-    const parsed = stripMood(message.content)
+    const parsed = readAssistant(message)
     if (!parsed.text && !parsed.mood) continue
     out.push({ role: 'assistant', text: parsed.text, mood: parsed.mood, thinking: parsed.thinking })
   }

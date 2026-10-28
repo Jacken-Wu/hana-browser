@@ -60,6 +60,7 @@ Playwright / 扩展的配对耗时比为 **1.24**（95% CI **1.16–1.34**）：
 | 关闭标签页 | `browser_close_tab` | 关闭 `browser_list_tabs` 返回的标签页 |
 | 读取区域 | `browser_get_text` | 懒加载内容 / 局部文本 |
 | 等待稳定 | `browser_wait` | 页面加载与渲染稳定检测 |
+| 视频转写 | `browser_video_transcript` | B 站视频在本地转文字稿：取 DASH 音频 → ffmpeg 转码 → 本地识别。无常驻服务，闲时零占用；文稿落盘缓存。侧边栏在 B 站视频页会多出一个「AI 总结」按钮。装依赖见 [adapter README](packages/hana-adapter/README.md#视频转写-b-站) |
 | 发送图片 | `session.prompt` / `session.attachment` | 按宿主能力启用图片草稿、纯图片消息和持久历史预览 |
 | 引用选中内容 | 侧栏输入框 | 在页面里划选的文字会出现在输入框，随下一条消息一起发送，并带上来源与不可信内容边界 |
 

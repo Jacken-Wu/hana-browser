@@ -20,6 +20,7 @@ const els = {
   follow: document.getElementById('follow'),
   stay: document.getElementById('stay'),
   newchat: document.getElementById('newchat'),
+  summarize: document.getElementById('summarize'),
   messages: document.getElementById('messages'),
   quote: document.getElementById('quote'),
   quotelabel: document.getElementById('quotelabel'),
@@ -38,10 +39,15 @@ const state = {
   sending: false,
   messages: [],
   selection: null,
+  progress: '',
+  pendingUserText: null,
 }
 
 const pending = new Map()
 let port = null
+
+/** 只有这两种地址才给「AI 总结」入口。 */
+const VIDEO_URL_PATTERN = /^https?:\/\/(?:[^/]+\.)?bilibili\.com\/video\/(?:BV[0-9A-Za-z]{10}|av\d+)/i
 
 function escapeHtml(value) {
   return String(value)
@@ -183,8 +189,53 @@ function updatePagebar() {
   els.pagebar.title = state.boundTitle || ''
 }
 
+function syncSummarize() {
+  els.summarize.disabled = state.sending || els.summarize.hidden
+}
+
+/** 按钮只在绑定的那个标签页是 B 站视频时才露出来。 */
+async function refreshSummarize() {
+  const tabId = state.boundTabId
+  if (tabId === null) {
+    els.summarize.hidden = true
+    syncSummarize()
+    return
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    els.summarize.hidden = !VIDEO_URL_PATTERN.test(tab.url || '')
+  } catch {
+    els.summarize.hidden = true
+  }
+  syncSummarize()
+}
+
+/**
+ * 按钮发出去的那段话。
+ *
+ * 「不要传 url」是有意写的：插件会自己从当前标签页取，让模型转述链接容易转错。
+ * 纠错那段是因为本地识别出来的稿子没有标点、还有同音字，
+ * 交给模型按上下文修比事后再补一层预处理划算。
+ * @param {string} title
+ */
+function summarizePrompt(title) {
+  const name = String(title || '').trim() || '当前视频'
+  return [
+    `总结这个 B 站视频《${name}》。`,
+    '',
+    '步骤：',
+    '1. 直接调用 browser_video_transcript，不要传 url，它会自己从当前标签页取。',
+    '2. 拿到文稿后给一份总结：一句话结论、主要观点（分点）、值得记住的细节。',
+    '3. 文稿由本地语音识别生成，可能缺标点、有同音字。按上下文自行纠正，',
+    '   不要照抄错字，也不要在回答里提「识别可能有误」这类元信息。',
+    '',
+    '转写要跑一两分钟的话，先说一句「开始转写」，别让界面空着。',
+  ].join('\n')
+}
+
 function syncSendButton() {
   els.send.disabled = state.sending || state.boundTabId === null || !els.input.value.trim()
+  syncSummarize()
 }
 
 function render() {
@@ -207,7 +258,9 @@ function render() {
     }
     return `<div class="msg ${m.role}">${escapeHtml(m.text)}</div>`
   })
-  if (state.sending) parts.push('<div class="thinking">思考中…</div>')
+  if (state.sending) {
+    parts.push(`<div class="thinking">${escapeHtml(state.progress || '思考中…')}</div>`)
+  }
   els.messages.innerHTML = parts.join('')
   els.messages.scrollTop = els.messages.scrollHeight
 }
@@ -229,6 +282,8 @@ function request(method, payload, onDone) {
 
 function finishTurn() {
   state.sending = false
+  state.progress = ''
+  state.pendingUserText = null
   render()
   syncSendButton()
 }
@@ -319,6 +374,27 @@ function onMessage(message) {
     const payload = inner.payload || {}
     if (String(payload.tabId) !== String(state.boundTabId)) return
 
+    if (payload.kind === 'accepted') {
+      // 这一轮可能不是面板自己发的（比如 B 站页面上的「AI 总结」按钮），
+      // 所以用回显的文字判断要不要补一条用户气泡。
+      const echoed = typeof payload.text === 'string' ? payload.text : ''
+      if (echoed && echoed !== state.pendingUserText) {
+        // 按钮发起的那一轮会把整段提示词当成用户消息，气泡里只放第一行。
+        state.messages.push({ role: 'user', text: echoed.split('\n')[0] })
+      }
+      state.pendingUserText = null
+      state.sending = true
+      state.progress = ''
+      render()
+      syncSendButton()
+      return
+    }
+    if (payload.kind === 'progress') {
+      state.progress = typeof payload.detail === 'string' ? payload.detail : ''
+      state.sending = true
+      render()
+      return
+    }
     if (payload.kind === 'reply') {
       state.messages.push({
         role: 'assistant',
@@ -397,7 +473,9 @@ function loadHistory() {
             .filter((m) => m && (m.role === 'user' || m.role === 'assistant'))
             .map((m) => ({
               role: m.role,
-              text: m.text || '',
+              text: m.role === 'user' && m.text && m.text.length > 240
+                ? `${String(m.text).split('\n')[0]} …`
+                : m.text || '',
               mood: m.mood || null,
               thinking: m.thinking || '',
             }))
@@ -413,17 +491,32 @@ function send() {
 
   els.input.value = ''
   els.input.style.height = ''
-  state.messages.push({ role: 'user', text })
-  state.sending = true
-  render()
-  syncSendButton()
-
-  const outgoing = composeText(text, state.selection)
-  if (state.selection) {
-    releaseSelection(state.selection)
+  const selection = state.selection
+  if (selection) {
+    releaseSelection(selection)
     state.selection = null
     renderQuote()
   }
+  sendTurn(text, text, selection)
+}
+
+/**
+ * 发一轮对话。text 是真正送出去的，display 是气泡上显示的（可能只是它的第一行）。
+ * @param {string} text
+ * @param {string} display
+ * @param {object|null} [selection]
+ */
+function sendTurn(text, display, selection) {
+  if (state.sending || state.boundTabId === null) return
+
+  state.messages.push({ role: 'user', text: display })
+  state.sending = true
+  state.progress = ''
+  render()
+  syncSendButton()
+
+  const outgoing = composeText(text, selection || null)
+  state.pendingUserText = outgoing
 
   request(
     'hana.chat.send',
@@ -454,6 +547,11 @@ els.input.addEventListener('keydown', (event) => {
 
 els.send.addEventListener('click', send)
 
+els.summarize.addEventListener('click', () => {
+  if (state.sending || state.boundTabId === null) return
+  sendTurn(summarizePrompt(state.boundTitle), 'AI 总结这个视频')
+})
+
 els.quoteclear.addEventListener('click', () => {
   releaseSelection(state.selection)
   state.selection = null
@@ -470,6 +568,7 @@ els.follow.addEventListener('click', () => {
   updatePagebar()
   state.messages = []
   render()
+  void refreshSummarize()
   void loadHistory()
 })
 
@@ -500,6 +599,13 @@ chrome.tabs.onActivated.addListener(() => {
     if (tab.id === state.dismissedTabId) return
     showBanner(tab)
   })()
+})
+
+// 绑定页在后台自己跳转时（比如点了视频推荐），按钮的显示条件跟着变。
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId !== state.boundTabId) return
+  if (typeof changeInfo.url !== 'string') return
+  void refreshSummarize()
 })
 
 function boot() {
@@ -535,6 +641,7 @@ function boot() {
     }
     updatePagebar()
     syncSendButton()
+    await refreshSummarize()
     await loadHistory()
   })()
 }
